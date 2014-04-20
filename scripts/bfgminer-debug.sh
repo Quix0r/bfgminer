@@ -25,8 +25,7 @@ fi
 
 if [ "${MINER}" = "amu" ]
 then
-	# Only listen on AMU (fits to my environment again
-	OPTIONS=" --api-listen"
+	OPTIONS=" --api-listen --set-device AMU:work_division=1 --set-device AMU:fpga_count=8"
 fi
 
 ${BFGMINER} --scan-serial ${MINER}:all ${OPTIONS} --debug -T 2> ${HOME}/.bfgminer/debug-${MINER}.log
