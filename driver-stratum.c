@@ -106,17 +106,23 @@ bool stratumsrv_update_notify_str(struct pool * const pool, bool clean)
 	struct stratumsrv_job *ssj;
 	ssize_t n2pad = work2d_pad_xnonce_size(swork);
 	if (n2pad < 0)
+	{
+		cg_runlock(&pool->data_lock);
 		return false;
+	}
 	size_t coinb1in_lenx = swork->nonce2_offset * 2;
 	size_t n2padx = n2pad * 2;
 	size_t coinb1_lenx = coinb1in_lenx + n2padx;
 	size_t coinb2_len = bytes_len(&swork->coinbase) - swork->nonce2_offset - n2size;
 	size_t coinb2_lenx = coinb2_len * 2;
 	sprintf(my_job_id, "%"PRIx64"-%"PRIx64, (uint64_t)time(NULL), _ssm_jobid++);
-	size_t bufsz = 166 + strlen(my_job_id) + coinb1_lenx + coinb2_lenx + (swork->merkles * 67);
+	// NOTE: The buffer has up to 2 extra/unused bytes:
+	// NOTE: - If clean is "true", we spare the extra needed for "false"
+	// NOTE: - The first merkle link does not need a comma, but we cannot subtract it without breaking the case of zero merkle links
+	size_t bufsz = 24 /* sprintf 1 constant */ + strlen(my_job_id) + 64 /* prevhash */ + coinb1_lenx + coinb2_lenx + (swork->merkles * 67) + 49 /* sprintf 2 constant */ + 8 /* version */ + 8 /* nbits */ + 8 /* ntime */ + 5 /* clean */ + 1;
 	char * const buf = malloc(bufsz);
 	char *p = buf;
-	char prevhash[65], coinb1[coinb1_lenx + 1], coinb2[coinb2_lenx], version[9], nbits[9], ntime[9];
+	char prevhash[65], coinb1[coinb1_lenx + 1], coinb2[coinb2_lenx + 1], version[9], nbits[9], ntime[9];
 	uint32_t ntime_n;
 	bin2hex(prevhash, &swork->header1[4], 32);
 	bin2hex(coinb1, bytes_buf(&swork->coinbase), swork->nonce2_offset);
@@ -182,7 +188,7 @@ void stratumsrv_client_changed_diff(struct proxy_client * const client)
 {
 	int connections_affected = 0, connections_changed = 0;
 	struct stratumsrv_conn_userlist *ule, *ule2;
-	LL_FOREACH(client->stratumsrv_connlist, ule)
+	LL_FOREACH2(client->stratumsrv_connlist, ule, client_next)
 	{
 		struct stratumsrv_conn * const conn = ule->conn;
 		
@@ -412,7 +418,11 @@ void stratumsrv_mining_subscribe(struct bufferevent * const bev, json_t * const 
 static
 void stratumsrv_mining_authorize(struct bufferevent * const bev, json_t * const params, const char * const idstr, struct stratumsrv_conn * const conn)
 {
-	struct proxy_client * const client = stratumsrv_find_or_create_client(__json_array_string(params, 0));
+	const char * const username = __json_array_string(params, 0);
+	if (!username)
+		return_stratumsrv_failure(20, "Missing or non-String username parameter");
+	
+	struct proxy_client * const client = stratumsrv_find_or_create_client(username);
 	
 	if (unlikely(!client))
 		return_stratumsrv_failure(20, "Failed creating new cgpu");
@@ -596,7 +606,7 @@ void stratumsrv_client_close(struct stratumsrv_conn * const conn)
 	{
 		struct proxy_client * const client = ule->client;
 		LL_DELETE(conn->authorised_users, ule);
-		LL_DELETE(client->stratumsrv_connlist, ule);
+		LL_DELETE2(client->stratumsrv_connlist, ule, client_next);
 		free(ule);
 	}
 	free(conn);
