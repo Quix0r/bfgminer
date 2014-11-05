@@ -83,6 +83,13 @@ bfgminer_SOURCES += miner.h compat.h  \
 		   sha2.c sha2.h api.c
 EXTRA_bfgminer_DEPENDENCIES =
 
+TESTS = test-bfgminer.sh
+EXTRA_DIST += test-bfgminer.sh
+SH_LOG_COMPILER = /bin/sh
+AM_TESTS_ENVIRONMENT = PATH='$(srcdir)':"$$PATH"; export PATH;
+TESTS_ENVIRONMENT = $(AM_TESTS_ENVIRONMENT)
+TEST_EXTENSIONS = .sh
+
 .PHONY: update-version
 update-version:
 	./gen-version.sh >version.h.new
@@ -96,6 +103,10 @@ EXTRA_bfgminer_DEPENDENCIES += $(libbase58_EXTRADEPS) $(libblkmaker_EXTRADEPS)
 @BUNDLED_LIB_RULES@
 
 bfgminer_SOURCES	+= logging.c
+
+if HAVE_WINDOWS
+bfgminer_SOURCES += winhacks.h
+endif
 
 if USE_UDEVRULES
 dist_udevrules_DATA = 70-bfgminer.rules
@@ -259,7 +270,7 @@ bfgminer_SOURCES += driver-zeusminer.c
 endif
 
 if HAS_AVALON
-bfgminer_SOURCES += driver-avalon.c driver-avalon.h hexdump.c
+bfgminer_SOURCES += driver-avalon.c driver-avalon.h
 endif
 
 if USE_AVALONMM
@@ -276,6 +287,10 @@ endif
 
 if HAS_MODMINER
 bfgminer_SOURCES += driver-modminer.c
+endif
+
+if USE_TITAN
+bfgminer_SOURCES += driver-titan.c titan-asic.c knc-asic/knc-asic.c knc-asic/knc-spimux.c knc-asic/knc-transport-spimux.c titan-asic.h knc-asic/include/knc-asic.h knc-asic/include/knc-transport.h
 endif
 
 if HAS_X6500

@@ -14,7 +14,7 @@ dnl * any later version.  See COPYING for more details.
 ##--##--##--##--##--##--##--##--##--##--##--##--##--##--##--##--##
 ##--##--##--##--##--##--##--##--##--##--##--##--##--##--##--##--##
 m4_define([v_maj], [4])
-m4_define([v_min], [8])
+m4_define([v_min], [10])
 m4_define([v_mic], [0])
 ##--##--##--##--##--##--##--##--##--##--##--##--##--##--##--##--##
 m4_define([v_ver], [v_maj.v_min.v_mic])
@@ -34,7 +34,7 @@ AC_CONFIG_HEADERS([config.h])
 
 AH_BOTTOM([
 #ifdef WIN32
-#include <winsock2.h>
+#include "winhacks.h"
 #endif
 ])
 
@@ -284,11 +284,11 @@ if test "x$ac_cv_header_sys_mman_h" = "xyes"; then
 	AC_ARG_WITH([uio],
 		[AC_HELP_STRING([--without-uio],[Compile support for PCI devices via Linux UIO interface (default enabled)])],
 		[uio=$withval],
-		[uio=$ddyes])
+		[uio=yes])
 	AC_ARG_WITH([vfio],
 		[AC_HELP_STRING([--without-vfio],[Compile support for PCI devices via Linux VFIO interface (default enabled)])],
-		[vfio=$enableval],
-		[vfio=$ddauto])
+		[vfio=$withval],
+		[vfio=auto])
 	if test "x$vfio" != "xno"; then
 		AC_CHECK_HEADER([linux/vfio.h],[
 			vfio=yes
@@ -403,12 +403,12 @@ AC_SUBST(JANSSON_CFLAGS)
 AC_SUBST(JANSSON_LIBS)
 
 if test "x$opencl" = xyes; then
-	adl="$ddyes"
+	adl="yes"
 	
 driverlist="$driverlist opencl:sensors/with_sensors"
 AC_ARG_WITH([sensors],
 	[AC_HELP_STRING([--without-sensors],[Build with libsensors monitoring (default enabled)])],
-	[true],[with_sensors=$ddauto])
+	[true],[with_sensors=auto])
 if test "x$opencl" != xyes; then
 	with_sensors=no
 fi
@@ -541,11 +541,17 @@ driverlist="$driverlist gridseed"
 AC_ARG_ENABLE([gridseed],
 	[AC_HELP_STRING([--disable-gridseed],[Compile support for GridSeed (default enabled with scrypt)])],
 	[gridseed=$enableval],
-	[gridseed=$scrypt])
+	[gridseed=$ddauto])
+if test "x$gridseed" = "xno"; then
+	true
+elif test "x$scrypt" = "xyes"; then
+	gridseed=yes
+elif test "x$gridseed" = "xauto"; then
+	gridseed=no
+else
+	AC_MSG_ERROR([You explicitly enabled GridSeed, but did not enable scrypt (SHA2 not supported)])
+fi
 if test "x$gridseed" = "xyes"; then
-	if test "x$scrypt" = "xno"; then
-		AC_MSG_ERROR([You explicitly enabled GridSeed, but did not enable scrypt (SHA2 not supported)])
-	fi
 	AC_DEFINE([USE_GRIDSEED], [1], [Defined to 1 if GridSeed support is wanted])
 	need_gc3355=yes
 	need_lowl_vcom=yes
@@ -776,6 +782,30 @@ if test "x$klondike" = xyes; then
 	have_udevrules=true
 fi
 AM_CONDITIONAL([HAS_KLONDIKE], [test x$klondike = xyes])
+
+
+driverlist="$driverlist titan"
+AC_ARG_ENABLE([titan],
+	[AC_HELP_STRING([--enable-titan],[Compile support for KnC Titan (default disabled)])],
+	[titan=$enableval],
+	[titan=$ddno]
+	)
+if test "x$titan" != xno && test "x$titan" != xauto; then
+	titan_controller=$titan
+	if test "x$titan" = xyes; then
+		titan_controller=RPI
+	fi
+	titan=yes
+	if test "x$scrypt" = "xno"; then
+		AC_MSG_ERROR([You explicitly enabled KnC Titan, but did not enable scrypt])
+	fi
+	AC_DEFINE([USE_TITAN], [1], [Defined to 1 if KnC Titan support is wanted])
+	AC_DEFINE_UNQUOTED([CONTROLLER_BOARD_$titan_controller],[1])
+	AH_TEMPLATE([CONTROLLER_BOARD_BACKPLANE])
+	AH_TEMPLATE([CONTROLLER_BOARD_BBB])
+	AH_TEMPLATE([CONTROLLER_BOARD_RPI])
+fi
+AM_CONDITIONAL([USE_TITAN], [test x$titan = xyes])
 
 
 driverlist="$driverlist x6500"
@@ -1160,6 +1190,7 @@ AC_ARG_ENABLE([minergate],
 	)
 if test "x$minergate" = "xyes"; then
 	AC_DEFINE([USE_MINERGATE], [1], [Defined to 1 if Spondoolies minergate interface support is wanted])
+	need_lowlevel=yes
 	has_asic=yes
 fi
 AM_CONDITIONAL([USE_MINERGATE], [test x$minergate = xyes])

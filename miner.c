@@ -168,6 +168,7 @@ int opt_expiry = 120;
 int opt_expiry_lp = 3600;
 unsigned long long global_hashrate;
 static bool opt_unittest = false;
+unsigned unittest_failures;
 unsigned long global_quota_gcd = 1;
 time_t last_getwork;
 
@@ -213,6 +214,7 @@ struct cgpu_info **devices_new;
 bool have_opencl;
 int opt_n_threads = -1;
 int mining_threads;
+int base_queue;
 int num_processors;
 #ifdef HAVE_CURSES
 bool use_curses = true;
@@ -345,8 +347,10 @@ wchar_t unicode_micro = 'u';
 const bool use_unicode;
 static
 const bool have_unicode_degrees;
+#ifdef HAVE_CURSES
 static
 const char unicode_micro = 'u';
+#endif
 #endif
 
 #ifdef HAVE_CURSES
@@ -760,11 +764,17 @@ invsyntax:
 
 #define TEST_CGPU_MATCH(pattern)  \
 	if (!cgpu_match(pattern, &cgpu))  \
+	{  \
+		++unittest_failures;  \
 		applog(LOG_ERR, "%s: Pattern \"%s\" should have matched!", __func__, pattern);  \
+	}  \
 // END TEST_CGPU_MATCH
 #define TEST_CGPU_NOMATCH(pattern)  \
 	if (cgpu_match(pattern, &cgpu))  \
+	{  \
+		++unittest_failures;  \
 		applog(LOG_ERR, "%s: Pattern \"%s\" should NOT have matched!", __func__, pattern);  \
+	}  \
 // END TEST_CGPU_MATCH
 static __maybe_unused
 void test_cgpu_match()
@@ -1362,10 +1372,16 @@ void _test_intrange(const char *s, const int v[2])
 {
 	int a[2];
 	if (!get_intrange(s, &a[0], &a[1]))
+	{
+		++unittest_failures;
 		applog(LOG_ERR, "Test \"%s\" failed: returned false", s);
+	}
 	for (int i = 0; i < 2; ++i)
 		if (unlikely(a[i] != v[i]))
+		{
+			++unittest_failures;
 			applog(LOG_ERR, "Test \"%s\" failed: value %d should be %d but got %d", s, i, v[i], a[i]);
+		}
 }
 #define _test_intrange(s, ...)  _test_intrange(s, (int[]){ __VA_ARGS__ })
 
@@ -1374,7 +1390,10 @@ void _test_intrange_fail(const char *s)
 {
 	int a[2];
 	if (get_intrange(s, &a[0], &a[1]))
+	{
+		++unittest_failures;
 		applog(LOG_ERR, "Test !\"%s\" failed: returned true with %d and %d", s, a[0], a[1]);
+	}
 }
 
 static
@@ -2343,9 +2362,9 @@ static struct opt_table opt_config_table[] = {
 	OPT_WITHOUT_ARG("--per-device-stats",
 			opt_set_bool, &want_per_device_stats,
 			"Force verbose mode and output per-device statistics"),
-	OPT_WITH_ARG("--userpass|-O",  // duplicate to ensure config loads it before pool-priority
+	OPT_WITH_ARG("--userpass|-O",
 	             set_userpass, NULL, NULL,
-	             opt_hidden),
+	             "Username:Password pair for bitcoin JSON-RPC server"),
 	OPT_WITH_ARG("--pool-priority",
 			 set_pool_priority, NULL, NULL,
 			 "Priority for just the previous-defined pool"),
@@ -2523,9 +2542,6 @@ static struct opt_table opt_config_table[] = {
 #endif
 	OPT_WITHOUT_ARG("--unittest",
 			opt_set_bool, &opt_unittest, opt_hidden),
-	OPT_WITH_ARG("--userpass|-O",
-		     set_userpass, NULL, NULL,
-		     "Username:Password pair for bitcoin JSON-RPC server"),
 	OPT_WITH_ARG("--coinbase-check-addr",
 			set_cbcaddr, NULL, NULL,
 			"A list of address to check against in coinbase payout list received from the previous-defined pool, separated by ','"),
@@ -3357,10 +3373,10 @@ static int total_staged(void)
 WINDOW *mainwin, *statuswin, *logwin;
 #endif
 double total_secs = 1.0;
-static char statusline[256];
 /* logstart is where the log window should start */
 static int devcursor, logstart, logcursor;
 #ifdef HAVE_CURSES
+static char statusline[256];
 /* statusy is where the status window goes up to in cases where it won't fit at startup */
 static int statusy;
 static int devsummaryYOffset;
@@ -3702,6 +3718,7 @@ void test_decimal_width()
 		percentf3(testbuf2, sizeof(testbuf2), testn, 10.0);
 		width = snprintf(printbuf, sizeof(printbuf), "%10g %s %s |", testn, testbuf1, testbuf2);
 		if (unlikely((saved != -1) && (width != saved))) {
+			++unittest_failures;
 			applog(LOG_ERR, "Test width mismatch in percentf3! %d not %d at %10g", width, saved, testn);
 			applog(LOG_ERR, "%s", printbuf);
 		}
@@ -3717,6 +3734,7 @@ void test_decimal_width()
 		snprintf(printbuf, sizeof(printbuf), "%10g %s %s %s |", testn, testbuf1, testbuf2, testbuf3);
 		width = utf8_strlen(printbuf);
 		if (unlikely((saved != -1) && (width != saved))) {
+			++unittest_failures;
 			applog(LOG_ERR, "Test width mismatch in format_unit2! %d not %d at %10g", width, saved, testn);
 			applog(LOG_ERR, "%s", printbuf);
 		}
@@ -3733,6 +3751,7 @@ void test_decimal_width()
 		snprintf(printbuf, sizeof(printbuf), "%10g %s %s %s %s |", testn, testbuf1, testbuf2, testbuf3, testbuf4);
 		width = utf8_strlen(printbuf);
 		if (unlikely((saved != -1) && (width != saved))) {
+			++unittest_failures;
 			applog(LOG_ERR, "Test width mismatch in pick_unit! %d not %d at %10g", width, saved, testn);
 			applog(LOG_ERR, "%s", printbuf);
 		}
@@ -4587,6 +4606,13 @@ void enable_pool(struct pool * const pool)
 	}
 }
 
+void manual_enable_pool(struct pool * const pool)
+{
+	pool->failover_only = false;
+	BFGINIT(pool->quota, 1);
+	enable_pool(pool);
+}
+
 void disable_pool(struct pool * const pool, const enum pool_enable enable_status)
 {
 	if (pool->enabled == POOL_DISABLED)
@@ -4981,7 +5007,9 @@ bool pool_actively_desired(const struct pool * const pool, const struct pool *cp
 {
 	if (pool->enabled != POOL_ENABLED)
 		return false;
-	if (pool_strategy == POOL_LOADBALANCE || pool_strategy == POOL_BALANCE)
+	if (pool_strategy == POOL_LOADBALANCE && pool->quota)
+		return true;
+	if (pool_strategy == POOL_BALANCE && !pool->failover_only)
 		return true;
 	if (!cp)
 		cp = current_pool();
@@ -7492,14 +7520,15 @@ updated:
 			if (pool->prio != j)
 				continue;
 
-			if (pool == current_pool())
+			if (pool_actively_in_use(pool, NULL))
 				wattron(logwin, A_BOLD);
 			if (pool->enabled != POOL_ENABLED || pool->failover_only)
 				wattron(logwin, A_DIM);
 			wlogprint("%d: ", pool->prio);
 			switch (pool->enabled) {
 				case POOL_ENABLED:
-					if (pool->failover_only)
+					if ((pool_strategy == POOL_LOADBALANCE) ? (!pool->quota)
+					    : ((pool_strategy != POOL_FAILOVER) ? pool->failover_only : 0))
 						wlogprint("Failover ");
 					else
 						wlogprint("Enabled  ");
@@ -7570,7 +7599,7 @@ retry:
 			goto retry;
 		}
 		pool = pools[selected];
-		pool->failover_only = false;
+		manual_enable_pool(pool);
 		switch_pools(pool);
 		goto updated;
 	} else if (!strncasecmp(&input, "d", 1)) {
@@ -7593,8 +7622,7 @@ retry:
 			goto retry;
 		}
 		pool = pools[selected];
-		pool->failover_only = false;
-		enable_pool(pool);
+		manual_enable_pool(pool);
 		goto updated;
 	} else if (!strncasecmp(&input, "c", 1)) {
 		for (i = 0; i <= TOP_STRATEGY; i++)
@@ -7640,6 +7668,8 @@ retry:
 			wlogprint("Invalid negative quota\n");
 			goto retry;
 		}
+		if (selected > 0)
+			pool->failover_only = false;
 		pool->quota = selected;
 		adjust_quota_gcd();
 		goto updated;
@@ -9489,6 +9519,7 @@ void _test_target(void * const funcp, const char * const funcname, const bool li
 	if (memcmp(&buf[off], &expect[off], 4))
 	{
 testfail: ;
+		++unittest_failures;
 		char hexbuf[65], expectbuf[65];
 		bin2hex(hexbuf, buf, 32);
 		bin2hex(expectbuf, expect, 32);
@@ -11600,7 +11631,9 @@ void register_device(struct cgpu_info *cgpu)
 
 	if (!cgpu->proc_id)
 		cgpu->device_line_id = device_line_id_count++;
-	mining_threads += cgpu->threads ?: 1;
+	int thr_objs = cgpu->threads ?: 1;
+	mining_threads += thr_objs;
+	base_queue += thr_objs + cgpu->extra_work_queue;
 #ifdef HAVE_CURSES
 	adj_width(mining_threads, &dev_width);
 #endif
@@ -12706,6 +12739,8 @@ int main(int argc, char *argv[])
 #ifdef USE_JINGTIAN
 		test_aan_pll();
 #endif
+		if (unittest_failures)
+			quit(1, "Unit tests failed");
 	}
 
 #ifdef HAVE_CURSES
@@ -13056,7 +13091,7 @@ begin_bench:
 		cp = current_pool();
 
 		// Generally, each processor needs a new work, and all at once during work restarts
-		max_staged += mining_threads;
+		max_staged += base_queue;
 
 		mutex_lock(stgd_lock);
 		ts = __total_staged();

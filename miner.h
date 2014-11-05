@@ -28,6 +28,9 @@
 #include <jansson.h>
 #include <curl/curl.h>
 #include <sched.h>
+#ifdef HAVE_INTTYPES_H
+#include <inttypes.h>
+#endif
 
 #include <blkmaker.h>
 #include <blktemplate.h>
@@ -468,6 +471,7 @@ struct cgpu_info {
 	char proc_repr_ns[9];
 	struct cgpu_info *device;
 	struct cgpu_info *next_proc;
+	int extra_work_queue;
 	
 	const char *device_path;
 	void *device_data;
@@ -1165,6 +1169,7 @@ extern int opt_hysteresis;
 extern int opt_fail_pause;
 extern int opt_log_interval;
 extern unsigned long long global_hashrate;
+extern unsigned unittest_failures;
 extern char *current_fullhash;
 extern double current_diff;
 extern double best_diff;
