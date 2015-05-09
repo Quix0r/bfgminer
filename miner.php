@@ -2034,7 +2034,7 @@ function joinfields($section1, $section2, $join, $results)
 			// If match the same field values of fields in $join
 			$match = true;
 			foreach ($join as $field)
-				if ($fields1b[$field] != $fields2b[$field])
+				if ((!isset($fields1b[$field])) || (!isset($fields2b[$field])) || ($fields1b[$field] != $fields2b[$field]))
 				{
 					$match = false;
 					break;
