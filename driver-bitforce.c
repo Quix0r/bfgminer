@@ -43,7 +43,6 @@
 #define BITFORCE_LONG_TIMEOUT_MS (BITFORCE_LONG_TIMEOUT_S * 1000)
 #define BITFORCE_CHECK_INTERVAL_MS 10
 #define WORK_CHECK_INTERVAL_MS 50
-#define MAX_START_DELAY_MS 100
 #define tv_to_ms(tval) ((unsigned long)(tval.tv_sec * 1000 + tval.tv_usec / 1000))
 #define TIME_AVG_CONSTANT 8
 #define BITFORCE_QRESULT_LINE_LEN 165
@@ -1245,7 +1244,7 @@ commerr:
 static char _discardedbuf[0x10];
 
 static
-int bitforce_zox(struct thr_info *thr, const char *cmd)
+int bitforce_zox(struct thr_info *thr, const char *cmd, int * const out_inprog)
 {
 	struct cgpu_info *bitforce = thr->cgpu;
 	struct bitforce_data *data = bitforce->device_data;
@@ -1256,7 +1255,14 @@ int bitforce_zox(struct thr_info *thr, const char *cmd)
 	mutex_lock(mutexp);
 	bitforce_cmd1b(bitforce, pdevbuf, sizeof(data->noncebuf), cmd, 3);
 	if (!strncasecmp(pdevbuf, "INPROCESS:", 10))
+	{
+		if (out_inprog)
+			*out_inprog = atoi(&pdevbuf[10]);
 		bitforce_gets(pdevbuf, sizeof(data->noncebuf), bitforce);
+	}
+	else
+	if (out_inprog)
+		*out_inprog = -1;
 	if (!strncasecmp(pdevbuf, "COUNT:", 6))
 	{
 		count = atoi(&pdevbuf[6]);
@@ -1348,7 +1354,7 @@ void bitforce_job_get_results(struct thr_info *thr, struct work *work)
 		}
 		
 		const char * const cmd = "ZFX";
-		count = bitforce_zox(thr, cmd);
+		count = bitforce_zox(thr, cmd, NULL);
 
 		cgtime(&now);
 		timersub(&now, &bitforce->work_start_tv, &elapsed);
@@ -1652,7 +1658,6 @@ void bitforce_zero_stats(struct cgpu_info * const proc)
 static bool bitforce_thread_init(struct thr_info *thr)
 {
 	struct cgpu_info *bitforce = thr->cgpu;
-	unsigned int wait;
 	struct bitforce_data *data;
 	struct bitforce_proc_data *procdata;
 	struct bitforce_init_data *initdata = bitforce->device_data;
@@ -1720,9 +1725,6 @@ static bool bitforce_thread_init(struct thr_info *thr)
 			}
 			else
 				bitforce_change_mode(bitforce, BFP_WORK);
-			
-			// Clear job queue to start fresh; ignore response
-			bitforce_cmd1b(bitforce, buf, sizeof(buf), "ZQX", 3);
 		}
 		else
 		{
@@ -1764,17 +1766,10 @@ static bool bitforce_thread_init(struct thr_info *thr)
 		{}
 	}
 	
-	// NOTE: This doesn't restore the first processor, but it does get us the last one; this is sufficient for the delay debug and start of the next loop below
-	bitforce = thr->cgpu;
+	bitforce = thr->cgpu->device;
 
 	free(initdata->parallels);
 	free(initdata);
-
-	/* Pause each new thread at least 100ms between initialising
-	 * so the devices aren't making calls all at the same time. */
-	wait = thr->id * MAX_START_DELAY_MS;
-	applog(LOG_DEBUG, "%s: Delaying start by %dms", bitforce->dev_repr, wait / 1000);
-	cgsleep_ms(wait);
 
 	if (unlikely(!bitforce_open(bitforce)))
 	{
@@ -1785,17 +1780,31 @@ static bool bitforce_thread_init(struct thr_info *thr)
 	
 	if (style != BFS_FPGA)
 	{
-		// Clear results queue last, to start fresh; ignore response
-		int last_xlink_id = -1;
-		for (bitforce = bitforce->device; bitforce; bitforce = bitforce->next_proc)
+		// Clear job and results queue, to start fresh; ignore response
+		for (int pass = 0, inprog = 1, tmp_inprog; pass < 500 && inprog; ++pass)
 		{
-			struct bitforce_data * const data = bitforce->device_data;
-			if (data->xlink_id == last_xlink_id)
-				continue;
-			last_xlink_id = data->xlink_id;
-			thr = bitforce->thr[0];
-			bitforce_zox(thr, "ZOX");
+			if (pass)
+				cgsleep_ms(10);
+			applog(LOG_DEBUG, "%s: Flushing job and results queue... pass %d", bitforce->dev_repr, pass);
+			
+			int last_xlink_id = -1;
+			inprog = 0;
+			for ( ; bitforce; bitforce = bitforce->next_proc)
+			{
+				struct bitforce_data * const data = bitforce->device_data;
+				if (data->xlink_id == last_xlink_id)
+					continue;
+				last_xlink_id = data->xlink_id;
+				thr = bitforce->thr[0];
+				if (!pass)
+					bitforce_cmd1b(bitforce, buf, sizeof(buf), "ZQX", 3);
+				bitforce_zox(thr, "ZOX", &tmp_inprog);
+				if (tmp_inprog == 1)
+					inprog = 1;
+			}
+			bitforce = thr->cgpu->device;
 		}
+		applog(LOG_DEBUG, "%s: Flushing job and results queue DONE", bitforce->dev_repr);
 	}
 	
 	return true;
@@ -2155,28 +2164,29 @@ bool bitforce_queue_do_results(struct thr_info *thr)
 	struct cgpu_info *chip_cgpu;
 	struct thr_info *chip_thr;
 	int counts[data->parallel];
+	bool ret = true;
 	
 	if (unlikely(!devdata->is_open))
 		return false;
 	
+	fcount = 0;
+	for (int i = 0; i < data->parallel; ++i)
+		counts[i] = 0;
+	
 again:
 	noncebuf = &data->noncebuf[0];
-	count = bitforce_zox(thr, "ZOX");
+	count = bitforce_zox(thr, "ZOX", NULL);
 	
 	if (unlikely(count < 0))
 	{
-		applog(LOG_ERR, "%"PRIpreprv": Received unexpected queue result response: %s", bitforce->proc_repr, noncebuf);
 		inc_hw_errors_only(thr);
-		return false;
+		return_via_applog(out, ret = false, LOG_ERR, "%"PRIpreprv": Received unexpected queue result response: %s", bitforce->proc_repr, noncebuf);
 	}
 	
 	applog(LOG_DEBUG, "%"PRIpreprv": Received %d queue results on poll (max=%d)", bitforce->proc_repr, count, (int)BITFORCE_MAX_QRESULTS);
 	if (!count)
-		return true;
+		goto done;
 	
-	fcount = 0;
-	for (int i = 0; i < data->parallel; ++i)
-		counts[i] = 0;
 	noncebuf = next_line(noncebuf);
 	while ((buf = noncebuf)[0])
 	{
@@ -2286,6 +2296,7 @@ next_qline: (void)0;
 	if (count >= BITFORCE_MAX_QRESULTS)
 		goto again;
 	
+done:
 	if (data->parallel == 1 && (
 	        (fcount < BITFORCE_GOAL_QRESULTS && bitforce->sleep_ms < BITFORCE_MAX_QRESULT_WAIT && data->queued > 1)
 	     || (fcount > BITFORCE_GOAL_QRESULTS && bitforce->sleep_ms > BITFORCE_MIN_QRESULT_WAIT)  ))
@@ -2303,6 +2314,7 @@ next_qline: (void)0;
 		applog(LOG_DEBUG, "%"PRIpreprv": Received %d queue results after %ums; Wait time unchanged (queued<=%d)",
 		       bitforce->proc_repr, fcount, bitforce->sleep_ms, data->queued);
 	
+out:
 	cgtime(&tv_now);
 	timersub(&tv_now, &data->tv_hashmeter_start, &tv_elapsed);
 	chip_cgpu = bitforce;
@@ -2313,7 +2325,7 @@ next_qline: (void)0;
 	}
 	data->tv_hashmeter_start = tv_now;
 	
-	return true;
+	return ret;
 }
 
 static
@@ -2536,7 +2548,7 @@ void bitforce_queue_flush(struct thr_info *thr)
 	else
 	if (data->max_queueid)
 		cmd = "FLB";
-	bitforce_zox(thr, cmd);
+	bitforce_zox(thr, cmd, NULL);
 	if (!strncasecmp(buf, "OK:FLUSHED", 10))
 		flushed = atoi(&buf[10]);
 	else
